@@ -28,12 +28,10 @@ os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 USER_DATA_DIR = os.path.abspath(os.path.join(STATE_DIR, "selenium_profile"))
 
-
 # ====================== 工具函数 ======================
 def get_bj_time():
     """返回北京时间字符串"""
     return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
-
 
 def send_tg_notification(message, photo_path=None):
     """发送 Telegram 通知，可附带截图"""
@@ -55,7 +53,6 @@ def send_tg_notification(message, photo_path=None):
     except Exception as e:
         print(f"[ERROR] TG 发送失败: {e}")
 
-
 def take_screenshot(driver, name):
     """截图并返回文件路径"""
     timestamp = datetime.now().strftime('%H%M%S')
@@ -66,7 +63,6 @@ def take_screenshot(driver, name):
     except Exception as e:
         print(f"[WARN] 截图失败: {e}")
     return filename
-
 
 def wait_for_turnstile_token(driver, timeout=90):
     """等待 Cloudflare Turnstile token 生成"""
@@ -82,7 +78,6 @@ def wait_for_turnstile_token(driver, timeout=90):
         time.sleep(1)
     return False
 
-
 def wait_for_url_contains(driver, keyword, timeout=45):
     """等待当前 URL 包含特定关键字"""
     start = time.time()
@@ -91,7 +86,6 @@ def wait_for_url_contains(driver, keyword, timeout=45):
             return True
         time.sleep(0.5)
     return False
-
 
 def check_login_error(driver):
     """检查页面是否有登录错误信息"""
@@ -107,14 +101,12 @@ def check_login_error(driver):
         pass
     return None
 
-
 def mask_email(email):
     """邮箱脱敏显示"""
     if '@' in email:
         local, domain = email.split('@', 1)
         return f"{local[:3]}***@{domain}"
     return f"{email[:3]}***"
-
 
 def parse_due_date(text):
     """将页面显示的日期字符串转换为 YYYY-MM-DD 格式"""
@@ -134,19 +126,24 @@ def parse_due_date(text):
         return text
     return None
 
-
 def get_current_due_date(driver):
     """获取当前管理页面的到期时间，返回原始字符串和标准化日期"""
-    try:
-        due_elem = driver.find_element(
-            "xpath", "//h6[contains(text(),'Due date')]/following-sibling::div"
-        )
-        raw = due_elem.text.strip()
-        std = parse_due_date(raw)
-        return raw, std
-    except:
-        return "N/A", None
-
+    selectors = [
+        "//h6[contains(text(),'Due date')]/following-sibling::div",
+        "//*[contains(text(),'Due date')]/following-sibling::*",
+        "//*[contains(text(),'Due Date')]/following-sibling::*",
+        "//*[contains(text(),'到期')]/following-sibling::*",
+    ]
+    for sel in selectors:
+        try:
+            due_elem = driver.find_element("xpath", sel)
+            raw = due_elem.text.strip()
+            std = parse_due_date(raw)
+            if std:
+                return raw, std
+        except:
+            continue
+    return "N/A", None
 
 # ====================== 主逻辑 ======================
 def main():
@@ -253,18 +250,69 @@ def main():
         take_screenshot(driver, "08-dashboard")
         time.sleep(3)
 
-        try:
-            element = driver.find_element("xpath", "//span[contains(text(),'Free Server #')]")
-            text = element.text.strip()
-            print("[INFO] 找到服务器文本: Free Server #***")
-            match = re.search(r'Free Server #(\d+)', text)
-            if match:
-                sid = match.group(1)
-                print("[INFO] ✅ 提取到服务器 ID: ***")
-        except Exception as e:
-            print(f"[ERROR] 页面元素定位失败: {e}")
+        sid = None
+
+        # 策略1：从表格行的 id 属性提取（如 table-column-body-207579）
+        if not sid:
+            try:
+                row = driver.find_element("xpath", "//tr[contains(@id,'table-column-body-')]")
+                row_id = row.get_attribute("id") or ""
+                match = re.search(r'table-column-body-(\d+)', row_id)
+                if match:
+                    sid = match.group(1)
+                    print(f"[INFO] ✅ 策略1从行ID提取到服务器 ID: {sid}")
+            except Exception as e:
+                print(f"[WARN] 策略1失败: {e}")
+
+        # 策略2：用 . 代替 text() 匹配 span 内所有文本（修复原Bug）
+        if not sid:
+            try:
+                elem = driver.find_element("xpath", "//span[contains(.,'Free Server #')]")
+                text = elem.text.strip()
+                match = re.search(r'Free Server #(\d+)', text)
+                if match:
+                    sid = match.group(1)
+                    print(f"[INFO] ✅ 策略2从文本提取到服务器 ID: {sid}")
+            except Exception as e:
+                print(f"[WARN] 策略2失败: {e}")
+
+        # 策略3：从页面内任意包含 /service/{id}/manage 的链接提取
+        if not sid:
+            try:
+                links = driver.find_elements("xpath", "//a[contains(@href,'/service/')]")
+                for link in links:
+                    href = link.get_attribute("href") or ""
+                    match = re.search(r'/service/(\d+)/manage', href)
+                    if match:
+                        sid = match.group(1)
+                        print(f"[INFO] ✅ 策略3从链接提取到服务器 ID: {sid}")
+                        break
+            except Exception as e:
+                print(f"[WARN] 策略3失败: {e}")
+
+        # 策略4：从整个页面 body 文本正则兜底
+        if not sid:
+            try:
+                body_text = driver.find_element("tag name", "body").text
+                match = re.search(r'Free Server #(\d+)', body_text)
+                if match:
+                    sid = match.group(1)
+                    print(f"[INFO] ✅ 策略4从页面文本提取到服务器 ID: {sid}")
+            except Exception as e:
+                print(f"[WARN] 策略4失败: {e}")
 
         if not sid:
+            # 调试：打印当前页面所有链接，方便排查
+            try:
+                all_links = driver.find_elements("xpath", "//a[@href]")
+                print(f"[DEBUG] 页面共 {len(all_links)} 个链接")
+                for link in all_links:
+                    href = link.get_attribute("href") or ""
+                    if "/service/" in href:
+                        text = (link.text or "").strip()
+                        print(f"[DEBUG] 服务链接: href={href}, text={text}")
+            except Exception as e:
+                print(f"[DEBUG] 打印链接失败: {e}")
             take_screenshot(driver, "ERROR-no-server-id")
             raise Exception("无法提取服务器 ID")
 
@@ -455,7 +503,6 @@ def main():
         raise
     finally:
         driver.quit()
-
 
 if __name__ == "__main__":
     main()
