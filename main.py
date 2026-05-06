@@ -248,7 +248,42 @@ def main():
         # ---------- 3. 提取服务器 ID ----------
         print("[INFO] 🔍 提取服务器 ID...")
         take_screenshot(driver, "08-dashboard")
-        time.sleep(3)
+
+        # SPA 页面异步加载：先轮询等待服务列表出现，最多 15 秒
+        print("[INFO] ⏳ 等待服务列表渲染...")
+        max_wait = 15
+        start = time.time()
+        loaded = False
+        while time.time() - start < max_wait:
+            try:
+                source = driver.page_source
+                body_text = driver.find_element("tag name", "body").text
+                if "Free Server" in body_text or "Your Services" in body_text or "table-column-body-" in source:
+                    loaded = True
+                    print("[INFO] ✅ 服务列表已渲染")
+                    break
+                if "Cloudflare" in body_text or "Checking your browser" in body_text:
+                    print("[WARN] 检测到 Cloudflare 验证页，继续等待...")
+            except Exception:
+                pass
+            time.sleep(1)
+
+        # 如果还没加载出来，刷新一次再试
+        if not loaded:
+            print("[WARN] 服务列表未渲染，尝试刷新页面...")
+            driver.get(f"{BASE_URL}/dashboard")
+            time.sleep(5)
+            take_screenshot(driver, "08-dashboard-refresh")
+            start2 = time.time()
+            while time.time() - start2 < 5:
+                try:
+                    if "Free Server" in driver.find_element("tag name", "body").text:
+                        loaded = True
+                        print("[INFO] ✅ 刷新后服务列表已渲染")
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
 
         sid = None
 
@@ -302,17 +337,19 @@ def main():
                 print(f"[WARN] 策略4失败: {e}")
 
         if not sid:
-            # 调试：打印当前页面所有链接，方便排查
+            # 调试：打印当前页面关键信息
             try:
+                print(f"[DEBUG] 当前URL: {driver.current_url}")
+                print(f"[DEBUG] 页面共 {len(driver.find_elements('xpath', '//a[@href]'))} 个链接")
                 all_links = driver.find_elements("xpath", "//a[@href]")
-                print(f"[DEBUG] 页面共 {len(all_links)} 个链接")
                 for link in all_links:
                     href = link.get_attribute("href") or ""
                     if "/service/" in href:
                         text = (link.text or "").strip()
                         print(f"[DEBUG] 服务链接: href={href}, text={text}")
+                print(f"[DEBUG] 页面源码前4000字符:\n{driver.page_source[:4000]}")
             except Exception as e:
-                print(f"[DEBUG] 打印链接失败: {e}")
+                print(f"[DEBUG] 打印调试信息失败: {e}")
             take_screenshot(driver, "ERROR-no-server-id")
             raise Exception("无法提取服务器 ID")
 
