@@ -254,18 +254,28 @@ def main():
         max_wait = 15
         start = time.time()
         loaded = False
+        check_count = 0
         while time.time() - start < max_wait:
+            check_count += 1
             try:
+                # 用 JS 获取 body text 更稳定
+                body_text = driver.execute_script("return document.body?.innerText || ''")
                 source = driver.page_source
-                body_text = driver.find_element("tag name", "body").text
+                print(f"[DEBUG] 第{check_count}次检查 - body前200字: {body_text[:200].replace(chr(10), ' ')}")
+
                 if "Free Server" in body_text or "Your Services" in body_text or "table-column-body-" in source:
                     loaded = True
                     print("[INFO] ✅ 服务列表已渲染")
                     break
-                if "Cloudflare" in body_text or "Checking your browser" in body_text:
-                    print("[WARN] 检测到 Cloudflare 验证页，继续等待...")
-            except Exception:
-                pass
+                if "Cloudflare" in body_text or "Checking your browser" in body_text or "Just a moment" in body_text:
+                    print("[WARN] 检测到 Cloudflare/验证页，继续等待...")
+                elif "error" in body_text.lower() and ("404" in body_text or "500" in body_text or "403" in body_text):
+                    print("[WARN] 检测到错误页面，继续等待...")
+                # 检测登录态失效（页面显示登录表单但URL没变）
+                if driver.is_element_visible("input#username") or "/auth/login" in driver.current_url:
+                    print("[WARN] 检测到登录页，登录态可能已失效")
+            except Exception as e:
+                print(f"[WARN] 第{check_count}次检查异常: {e}")
             time.sleep(1)
 
         # 如果还没加载出来，刷新一次再试
@@ -275,14 +285,18 @@ def main():
             time.sleep(5)
             take_screenshot(driver, "08-dashboard-refresh")
             start2 = time.time()
+            check_count2 = 0
             while time.time() - start2 < 5:
+                check_count2 += 1
                 try:
-                    if "Free Server" in driver.find_element("tag name", "body").text:
+                    body_text = driver.execute_script("return document.body?.innerText || ''")
+                    print(f"[DEBUG] 刷新后第{check_count2}次检查 - body前200字: {body_text[:200].replace(chr(10), ' ')}")
+                    if "Free Server" in body_text or "Your Services" in body_text:
                         loaded = True
                         print("[INFO] ✅ 刷新后服务列表已渲染")
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[WARN] 刷新后检查异常: {e}")
                 time.sleep(1)
 
         sid = None
@@ -328,7 +342,7 @@ def main():
         # 策略4：从整个页面 body 文本正则兜底
         if not sid:
             try:
-                body_text = driver.find_element("tag name", "body").text
+                body_text = driver.execute_script("return document.body?.innerText || ''")
                 match = re.search(r'Free Server #(\d+)', body_text)
                 if match:
                     sid = match.group(1)
@@ -347,7 +361,10 @@ def main():
                     if "/service/" in href:
                         text = (link.text or "").strip()
                         print(f"[DEBUG] 服务链接: href={href}, text={text}")
-                print(f"[DEBUG] 页面源码前4000字符:\n{driver.page_source[:4000]}")
+                # 打印源码前 6000 字符
+                full_source = driver.page_source
+                print(f"[DEBUG] 页面源码前6000字符:\n{full_source[:6000]}")
+                print(f"[DEBUG] 页面源码总长度: {len(full_source)}")
             except Exception as e:
                 print(f"[DEBUG] 打印调试信息失败: {e}")
             take_screenshot(driver, "ERROR-no-server-id")
