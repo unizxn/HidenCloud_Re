@@ -145,6 +145,133 @@ def get_current_due_date(driver):
             continue
     return "N/A", None
 
+def detect_connection_error(driver):
+    """检测页面是否是 Chrome 连接错误页（ERR_CONNECTION_RESET / ERR_TIMED_OUT 等）"""
+    try:
+        body_text = driver.execute_script("return document.body?.innerText || ''")
+        error_indicators = [
+            "ERR_CONNECTION_RESET",
+            "ERR_TIMED_OUT",
+            "ERR_NAME_NOT_RESOLVED",
+            "ERR_CONNECTION_REFUSED",
+            "ERR_CONNECTION_CLOSED",
+            "ERR_PROXY_CONNECTION_FAILED",
+            "ERR_SOCKS_CONNECTION_FAILED",
+            "ERR_TUNNEL_CONNECTION_FAILED",
+            "This site can\u2019t be reached",
+            "This site can't be reached",
+            "Unable to connect",
+            "No internet",
+            "Webpage not available",
+        ]
+        for indicator in error_indicators:
+            if indicator in body_text:
+                # 提取具体错误信息
+                for line in body_text.split('\n'):
+                    line = line.strip()
+                    if any(err in line for err in error_indicators):
+                        return line
+        return None
+    except:
+        return None
+
+def wait_for_page_loaded(driver, url_keyword, timeout=30):
+    """
+    等待页面真正加载完成（非 Chrome 错误页）。
+    返回 (loaded: bool, error_msg: str|None)
+    """
+    start = time.time()
+    check_count = 0
+    while time.time() - start < timeout:
+        check_count += 1
+        try:
+            # 先检测连接错误
+            conn_error = detect_connection_error(driver)
+            if conn_error:
+                print(f"[DEBUG] 第{check_count}次检查 - 连接错误: {conn_error}")
+
+                # 如果检测到错误，尝试判断是否能恢复
+                # 有些错误是暂时的，给几次重试机会
+                if check_count <= 3:
+                    # 前 3 次：等一下再试
+                    time.sleep(2)
+                    continue
+                else:
+                    # 3 次都是错误：确认连接失败
+                    return False, conn_error
+
+            body_text = driver.execute_script("return document.body?.innerText || ''")
+            source = driver.page_source
+
+            # 检测页面真正加载成功
+            if any(kw in body_text for kw in ["Free Server", "Your Services", "Dashboard"]):
+                return True, None
+            if "table-column-body-" in source:
+                return True, None
+
+            # 检测登录页也算加载成功
+            if driver.is_element_visible("input#username") or "/auth/login" in driver.current_url:
+                return True, None
+
+            # 检测 Cloudflare 验证页
+            if any(kw in body_text for kw in ["Cloudflare", "Checking your browser", "Just a moment"]):
+                print(f"[DEBUG] 第{check_count}次检查 - Cloudflare 验证页，继续等待...")
+            else:
+                print(f"[DEBUG] 第{check_count}次检查 - body前150字: {body_text[:150].replace(chr(10), ' ')}")
+
+        except Exception as e:
+            print(f"[WARN] 第{check_count}次检查异常: {e}")
+
+        time.sleep(1)
+
+    # 超时后再做一次最终检查
+    conn_error = detect_connection_error(driver)
+    if conn_error:
+        return False, conn_error
+
+    return False, "页面加载超时"
+
+def navigate_and_wait(driver, url, timeout=30, check_keyword="dashboard"):
+    """
+    导航到指定 URL 并等待页面加载完成。
+    会自动检测连接错误并重试一次。
+    返回 (success: bool, error_msg: str|None)
+    """
+    print(f"[INFO] 🌐 导航到: {url}")
+
+    try:
+        driver.get(url)
+    except Exception as e:
+        # 如果导航本身就超时了，检查页面状态
+        print(f"[WARN] 导航异常（可能部分加载）: {e}")
+        time.sleep(2)
+        conn_error = detect_connection_error(driver)
+        if conn_error:
+            return False, f"导航失败: {conn_error}"
+
+    # 等待页面加载
+    loaded, error = wait_for_page_loaded(driver, check_keyword, timeout=timeout)
+    if loaded:
+        return True, None
+
+    # 第一次失败，刷新重试
+    print(f"[WARN] 页面加载失败 ({error})，刷新重试...")
+    try:
+        driver.refresh()
+    except:
+        try:
+            driver.get(url)
+        except Exception as e:
+            return False, f"刷新也失败: {e}"
+
+    time.sleep(3)
+    loaded2, error2 = wait_for_page_loaded(driver, check_keyword, timeout=timeout)
+    if loaded2:
+        print("[INFO] ✅ 刷新后页面加载成功")
+        return True, None
+
+    return False, f"页面加载失败: {error2}"
+
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
@@ -187,11 +314,24 @@ def main():
     sid = None
 
     try:
-        # ---------- 1. 访问主页 ----------
+        # ---------- 1. 访问主页（含连接检测） ----------
         print(f"[INFO] 🌐 访问主页: {BASE_URL}/dashboard")
-        driver.get(f"{BASE_URL}/dashboard")
-        time.sleep(3)
+
+        nav_ok, nav_error = navigate_and_wait(driver, f"{BASE_URL}/dashboard", timeout=20)
         take_screenshot(driver, "01-initial")
+
+        if not nav_ok:
+            # 连接失败，打印详细信息
+            print(f"[ERROR] ❌ 无法访问 HidenCloud: {nav_error}")
+            take_screenshot(driver, "ERROR-connection-failed")
+            # 打印当前页面信息帮助调试
+            try:
+                print(f"[DEBUG] 当前URL: {driver.current_url}")
+                body_text = driver.execute_script("return document.body?.innerText || ''")
+                print(f"[DEBUG] 页面内容前500字:\n{body_text[:500]}")
+            except:
+                pass
+            raise Exception(f"无法访问 HidenCloud（{nav_error}），请检查代理配置或网络连接")
 
         # ---------- 2. 登录判断 ----------
         if "/auth/login" in driver.current_url or driver.is_element_visible("input#username"):
@@ -249,7 +389,14 @@ def main():
         print("[INFO] 🔍 提取服务器 ID...")
         take_screenshot(driver, "08-dashboard")
 
-        # SPA 页面异步加载：先轮询等待服务列表出现，最多 15 秒
+        # 再次确认页面确实加载了 Dashboard 内容（防止登录后跳转到错误页）
+        conn_err = detect_connection_error(driver)
+        if conn_err:
+            print(f"[ERROR] ❌ Dashboard 页面连接错误: {conn_err}")
+            take_screenshot(driver, "ERROR-dashboard-connection")
+            raise Exception(f"Dashboard 连接错误: {conn_err}，请检查代理配置")
+
+        # 等待 SPA 服务列表渲染
         print("[INFO] ⏳ 等待服务列表渲染...")
         max_wait = 15
         start = time.time()
@@ -258,22 +405,30 @@ def main():
         while time.time() - start < max_wait:
             check_count += 1
             try:
-                # 用 JS 获取 body text 更稳定
                 body_text = driver.execute_script("return document.body?.innerText || ''")
                 source = driver.page_source
-                print(f"[DEBUG] 第{check_count}次检查 - body前200字: {body_text[:200].replace(chr(10), ' ')}")
+
+                # 检测连接错误（可能在等待过程中出现）
+                conn_err = detect_connection_error(driver)
+                if conn_err:
+                    print(f"[ERROR] 等待期间检测到连接错误: {conn_err}")
+                    loaded = False
+                    break
 
                 if "Free Server" in body_text or "Your Services" in body_text or "table-column-body-" in source:
                     loaded = True
                     print("[INFO] ✅ 服务列表已渲染")
                     break
                 if "Cloudflare" in body_text or "Checking your browser" in body_text or "Just a moment" in body_text:
-                    print("[WARN] 检测到 Cloudflare/验证页，继续等待...")
-                elif "error" in body_text.lower() and ("404" in body_text or "500" in body_text or "403" in body_text):
-                    print("[WARN] 检测到错误页面，继续等待...")
-                # 检测登录态失效（页面显示登录表单但URL没变）
+                    print(f"[DEBUG] 第{check_count}次检查 - Cloudflare 验证页，继续等待...")
+                elif check_count % 3 == 0:
+                    # 每 3 次打印一次状态（减少日志量）
+                    print(f"[DEBUG] 第{check_count}次检查 - 等待中...")
+
+                # 检测登录态失效
                 if driver.is_element_visible("input#username") or "/auth/login" in driver.current_url:
                     print("[WARN] 检测到登录页，登录态可能已失效")
+                    break
             except Exception as e:
                 print(f"[WARN] 第{check_count}次检查异常: {e}")
             time.sleep(1)
@@ -284,17 +439,25 @@ def main():
             driver.get(f"{BASE_URL}/dashboard")
             time.sleep(5)
             take_screenshot(driver, "08-dashboard-refresh")
+
+            # 刷新后先检查连接错误
+            conn_err = detect_connection_error(driver)
+            if conn_err:
+                print(f"[ERROR] ❌ 刷新后连接错误: {conn_err}")
+                raise Exception(f"刷新后连接错误: {conn_err}，请检查代理配置")
+
             start2 = time.time()
             check_count2 = 0
-            while time.time() - start2 < 5:
+            while time.time() - start2 < 10:
                 check_count2 += 1
                 try:
                     body_text = driver.execute_script("return document.body?.innerText || ''")
-                    print(f"[DEBUG] 刷新后第{check_count2}次检查 - body前200字: {body_text[:200].replace(chr(10), ' ')}")
                     if "Free Server" in body_text or "Your Services" in body_text:
                         loaded = True
                         print("[INFO] ✅ 刷新后服务列表已渲染")
                         break
+                    if check_count2 % 3 == 0:
+                        print(f"[DEBUG] 刷新后第{check_count2}次检查 - 等待中...")
                 except Exception as e:
                     print(f"[WARN] 刷新后检查异常: {e}")
                 time.sleep(1)
@@ -361,7 +524,6 @@ def main():
                     if "/service/" in href:
                         text = (link.text or "").strip()
                         print(f"[DEBUG] 服务链接: href={href}, text={text}")
-                # 打印源码前 6000 字符
                 full_source = driver.page_source
                 print(f"[DEBUG] 页面源码前6000字符:\n{full_source[:6000]}")
                 print(f"[DEBUG] 页面源码总长度: {len(full_source)}")
@@ -372,8 +534,15 @@ def main():
 
         manage_url = f"{BASE_URL}/service/{sid}/manage"
         print(f"[INFO] 🚀 访问管理页面: {BASE_URL}/service/***/manage")
+
+        # 访问管理页面也需要检测连接
         driver.get(manage_url)
         time.sleep(3)
+        conn_err = detect_connection_error(driver)
+        if conn_err:
+            print(f"[ERROR] ❌ 管理页面连接错误: {conn_err}")
+            take_screenshot(driver, "ERROR-manage-connection")
+            raise Exception(f"管理页面连接错误: {conn_err}")
         take_screenshot(driver, "09-manage-page")
 
         # ---------- 4. 获取续订前到期时间 ----------
