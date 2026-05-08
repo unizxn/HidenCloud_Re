@@ -1,80 +1,85 @@
 # HidenCloud_Re
 
-HidenCloud 自动续期脚本，基于 SeleniumBase + GitHub Actions 定时运行。
+HidenCloud 免费服务器自动续期脚本，基于 SeleniumBase + GitHub Actions 定时运行。
 
-## 2026-05-08 更新（关键修复）
+## 功能
 
-### 🎯 根因：SOCKS5 直连在 GitHub Actions 上不可用
+- 自动登录 HidenCloud Dashboard（含 Cloudflare Turnstile 验证）
+- 自动提取 Free Server ID 并执行续期操作
+- 支持多协议代理（Xray 本地转发）
+- 自动调整 Cron 定时（到期前 20 小时触发）
+- Telegram 通知推送
+- 浏览器状态缓存跨运行保留（减少重复登录）
 
-对比同账号下可正常运行的 [JustRunMy_Renew_2](https://github.com/unizxn/JustRunMy_Renew_2) 和 [KataBump-Re](https://github.com/unizxn/KataBump-Re) 项目，发现它们都通过本地代理工具（sing-box / gost）转发所有协议，而不是让 Chrome 直连外部代理。
+## 使用方法
 
-| 项目 | 代理处理方式 | 是否正常 |
-|------|------------|---------|
-| JustRunMy_Renew_2 | sing-box：外部代理 → 本地 `http://127.0.0.1:8080` | ✅ |
-| KataBump-Re | gost：外部代理 → 本地 `http://127.0.0.1:8080` | ✅ |
-| HidenCloud_Re（旧） | Chrome 直连外部 SOCKS5 | ❌ ERR_CONNECTION_RESET |
-| HidenCloud_Re（新） | Xray：外部代理 → 本地 `socks5://127.0.0.1:1080` | ✅ |
+### 1. Fork 本仓库
 
-**GitHub Actions runner（Azure 环境）的网络策略会阻止 Chrome/Selenium 直接连接外部 SOCKS5 服务器，但允许本地工具（Xray/sing-box/gost）建立出站连接后通过本地端口转发。**
+### 2. 配置 Secrets
 
-### 修复内容
+在仓库 **Settings → Secrets and variables → Actions** 中添加：
 
-1. **SOCKS5 改为走 Xray 本地转发（核心修复）**
-   - 原代码对 `socks5://` 协议直接 `sys.exit(0)` 退出，让 Chrome 直连外部 SOCKS5。
-   - 现在所有协议（vless/vmess/trojan/ss/socks5）统一通过 Xray 生成配置，在本地 `127.0.0.1:1080` 建立 SOCKS5 代理。
-   - Chrome 始终使用 `socks5://127.0.0.1:1080`（本地连接），Xray 负责转发到外部代理服务器。
-   - 删除了 `use_external_socks.txt` 和外部 SOCKS5 直连测试逻辑。
+| Secret | 必填 | 说明 |
+|--------|:----:|------|
+| `HIDENCLOUD` | ✅ | HidenCloud 账号，格式为 `email-----password` |
+| `PROXY_NODE` | ❌ | 代理节点链接（GitHub Actions runner 无法直连 HidenCloud，建议配置） |
+| `TG_BOT_TOKEN` | ❌ | Telegram Bot Token |
+| `TG_CHAT_ID` | ❌ | Telegram Chat ID |
+| `REPO_TOKEN` | ❌ | GitHub PAT（用于自动更新 Cron，需 `repo` 权限） |
 
-2. **保留之前的所有修复**
-   - 连接错误早期检测（`detect_connection_error`）
-   - "已登录"误判修复
-   - 服务器 ID 多策略提取（4 种降级策略）
-   - `set -o pipefail` 修复 Actions 假成功
-   - 日志和截图 Artifact 上传
+### 3. 支持的代理协议
 
-### 之前的修复（2026-05-06 / 2026-05-07）
+| 协议 | 示例 |
+|------|------|
+| VLESS | `vless://uuid@host:port?security=reality&...` |
+| VMess | `vmess://base64...` |
+| Trojan | `trojan://password@host:port?...` |
+| Shadowsocks | `ss://base64@host:port` |
+| SOCKS5 | `socks5://user:pass@host:port` |
 
-3. **修复服务器 ID 提取失败**
-   - HidenCloud Dashboard 页面改版后，`<span>` 内嵌套了 `<small>` 子元素。
-   - 改用多策略容错提取（行 ID → `contains(.,)` → 链接 href → body 文本正则）。
+所有协议统一通过 Xray 转发至本地 `socks5://127.0.0.1:1080`，Chrome 始终连接本地端口。
 
-4. **修复 Due Date 提取容错**（多选择器降级）
+### 4. 手动触发
 
-5. **修复 GitHub Actions 假成功**（`set -o pipefail`）
-
-## 环境变量
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `HIDENCLOUD` | ✅ | `email-----password` 格式 |
-| `TG_BOT_TOKEN` | ❌ | Telegram Bot Token（可选） |
-| `TG_CHAT_ID` | ❌ | Telegram Chat ID（可选） |
-| `PROXY_NODE` | ❌ | 代理节点，支持 `vless://` / `vmess://` / `trojan://` / `ss://` / `socks5://` |
-| `REPO_TOKEN` | ❌ | 用于自动更新 Cron 的 GitHub PAT |
+**Actions → HidenCloud 续期 → Run workflow**，或等待自动 Cron 触发。
 
 ## 工作流程
 
 ```
-1. 安装依赖 + 配置 Xray 代理（所有协议统一本地转发）
-   ├─ 解析 PROXY_NODE → 生成 xray_config.json
-   ├─ 启动 Xray（本地 127.0.0.1:1080）
-   └─ 验证连通性（curl 通过本地代理访问 api.ipify.org）
-2. 恢复浏览器缓存 → 清理锁文件
-3. 启动 Headless Chrome（proxy = socks5://127.0.0.1:1080）
-   ├─ 连接错误检测 → 快速报错
-   ├─ 未登录 → 自动登录（含 Turnstile 处理）
-   └─ 已登录 → 直接进入下一步
-4. 提取服务器 ID（4 种策略降级）
-5. 访问管理页面 → 获取到期时间
-6. 点击 Renew → Create Invoice → Pay
-7. 获取续期后到期时间 → 判断结果
-8. 发送 TG 通知 → 保存浏览器缓存
-9. 自动计算下次运行时间并更新 Cron
-10. 上传日志和截图 Artifact
+解析代理节点 → 启动 Xray 本地转发 → 测试连通性
+        ↓
+恢复浏览器缓存 → 启动 Headless Chrome
+        ↓
+访问 Dashboard ──失败──→ 重启浏览器重试（最多 3 次）
+        ↓成功
+检测登录状态
+   ├─ 未登录 → 填写表单 → Turnstile 验证 → 提交登录
+   └─ 已登录 → 继续
+        ↓
+提取服务器 ID（4 种降级策略）
+        ↓
+访问管理页面 → 获取续期前到期时间
+        ↓
+点击 Renew → Create Invoice → Pay
+        ↓
+获取续期后到期时间 → 判断结果
+        ↓
+TG 通知 → 保存浏览器缓存 → 自动更新 Cron
 ```
 
-## 注意
+## 安全说明
 
-- 浏览器状态通过 Actions Cache 跨运行保留。
-- 每次运行前自动清理 Chrome 锁文件。
-- 运行日志和截图可在 Actions → Artifacts 下载。
+- 代理节点地址和端口在日志中自动脱敏显示（如 `*8***3*:****`）
+- Xray 配置文件在运行结束后自动删除
+- 日志和截图仅通过私有 Artifact 提供（3 天后自动过期）
+- `set -o pipefail` 确保 Python 异常不会被管道吞掉导致假成功
+
+## 调试
+
+运行失败时，前往 **Actions → 对应的 Run → Artifacts** 下载：
+
+| 文件 | 内容 |
+|------|------|
+| `renew.log` | 脚本完整运行日志 |
+| `screenshots/` | 每个关键步骤的截图 |
+| `xray.log` | Xray 代理日志（仅代理失败时有用） |
