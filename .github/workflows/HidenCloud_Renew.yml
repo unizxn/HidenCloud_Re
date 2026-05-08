@@ -52,6 +52,7 @@ jobs:
               print("[ERROR] PROXY_NODE 为空")
               sys.exit(1)
 
+          # 统一解析协议类型
           if url.startswith("vless://"):
               protocol = "vless"
               content = url[8:]
@@ -67,14 +68,6 @@ jobs:
           elif url.startswith("socks5://") or url.startswith("socks://"):
               protocol = "socks5"
               content = url.split("://")[1].split("#")[0]
-              if "@" in content:
-                  server = content.split("@")[1].split(":")[0]
-              else:
-                  server = content.split(":")[0]
-              print(f"[INFO] SOCKS5 -> {mask(server)}")
-              with open("use_external_socks.txt", "w") as f:
-                  f.write(url.split("#")[0])
-              sys.exit(0)
           else:
               print(f"[ERROR] 不支持的协议: {url.split('://')[0]}")
               sys.exit(1)
@@ -82,6 +75,7 @@ jobs:
           if "#" in content:
               content = content.rsplit("#", 1)[0]
 
+          # 所有协议统一生成 Xray 配置，通过本地 127.0.0.1:1080 转发
           config = {
               "log": {"loglevel": "warning"},
               "inbounds": [
@@ -91,7 +85,36 @@ jobs:
               "outbounds": []
           }
 
-          if protocol == "vless":
+          if protocol == "socks5":
+              # 解析 socks5://user:pass@host:port
+              users = None
+              server_part = content
+              if "@" in content:
+                  auth_part, server_part = content.rsplit("@", 1)
+                  if ":" in auth_part:
+                      user, pwd = auth_part.split(":", 1)
+                      users = [{"user": user, "pass": pwd}]
+              if ":" in server_part:
+                  address, port = server_part.rsplit(":", 1)
+              else:
+                  address, port = server_part, "1080"
+
+              print(f"[INFO] SOCKS5 -> {mask(address)}:{port}")
+
+              outbound = {
+                  "protocol": "socks",
+                  "settings": {
+                      "servers": [{
+                          "address": address,
+                          "port": int(port),
+                      }]
+                  }
+              }
+              if users:
+                  outbound["settings"]["servers"][0]["users"] = users
+              config["outbounds"].append(outbound)
+
+          elif protocol == "vless":
               uuid, rest = content.split("@", 1)
               if "?" in rest:
                   host_port, params_str = rest.split("?", 1)
@@ -300,60 +323,17 @@ jobs:
           with open("xray_config.json", "w") as f:
               json.dump(config, f, indent=2)
 
-          print("[INFO] ✅ 代理配置已生成")
+          print("[INFO] ✅ Xray 代理配置已生成（所有协议均通过本地转发）")
           PYEOF
 
-          if [ -f "use_external_socks.txt" ]; then
-            EXTERNAL_SOCKS=$(cat use_external_socks.txt)
-            echo "[INFO] 测试外部 SOCKS5 代理连接..."
-
-            # 测试1：代理本身是否通
-            PROXY_ALIVE=false
-            for i in 1 2 3 4 5; do
-              if curl -x "$EXTERNAL_SOCKS" -s --max-time 15 https://api.ipify.org > /dev/null 2>&1; then
-                PROXY_ALIVE=true
-                echo "[INFO] ✅ SOCKS5 代理连接成功 (尝试 $i/5)"
-                break
-              fi
-              echo "[WARN] SOCKS5 尝试 $i/5 失败..."
-              sleep 3
-            done
-
-            if [ "$PROXY_ALIVE" != "true" ]; then
-              echo "[ERROR] ❌ SOCKS5 代理连接失败，无法通过代理访问互联网"
-              exit 1
-            fi
-
-            # 测试2：代理能否访问 HidenCloud
-            HIDEN_OK=false
-            for i in 1 2 3; do
-              HTTP_CODE=$(curl -x "$EXTERNAL_SOCKS" -s --max-time 20 -o /dev/null -w "%{http_code}" https://dash.hidencloud.com)
-              echo "[INFO] HidenCloud HTTP 状态码: $HTTP_CODE (尝试 $i/3)"
-              if echo "$HTTP_CODE" | grep -qE "^(200|301|302|403)$"; then
-                HIDEN_OK=true
-                echo "[INFO] ✅ 通过 SOCKS5 可访问 HidenCloud"
-                break
-              fi
-              sleep 2
-            done
-
-            if [ "$HIDEN_OK" != "true" ]; then
-              echo "[ERROR] ❌ SOCKS5 代理无法访问 dash.hidencloud.com (HTTP $HTTP_CODE)"
-              exit 1
-            fi
-
-            echo "PROXY_SERVER=$EXTERNAL_SOCKS" >> $GITHUB_ENV
-            echo "[INFO] ✅ 使用外部 SOCKS5 代理"
-            exit 0
-          fi
-
+          # 所有协议统一通过 Xray 本地转发
           ./xray/xray run -c xray_config.json > xray.log 2>&1 &
           sleep 5
 
-          echo "[INFO] 测试代理连接..."
+          echo "[INFO] 测试代理连通性..."
           for i in 1 2 3 4 5; do
             if curl -x socks5://127.0.0.1:1080 -s --max-time 15 https://api.ipify.org > /dev/null 2>&1; then
-              echo "[INFO] ✅ 代理连接成功"
+              echo "[INFO] ✅ 本地代理连接成功"
               echo "PROXY_SERVER=socks5://127.0.0.1:1080" >> $GITHUB_ENV
               exit 0
             fi
