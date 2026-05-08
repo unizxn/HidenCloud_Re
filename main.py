@@ -174,6 +174,13 @@ def wait_for_page_loaded(driver, timeout=30):
     while time.time() - start < timeout:
         check_count += 1
         try:
+            # 如果 URL 还是 about:blank，导航根本没发生
+            if driver.current_url in ("about:blank", "data:,"):
+                if check_count > 5:
+                    return False, "页面未加载（URL 仍为 about:blank）"
+                time.sleep(1)
+                continue
+
             conn_error = detect_connection_error(driver)
             if conn_error:
                 if check_count <= 3:
@@ -213,6 +220,15 @@ def navigate_and_wait(driver, url, timeout=30):
     except Exception as e:
         print(f"[WARN] 导航异常: {e}")
         time.sleep(2)
+        # 检查是否导航到了任何页面
+        try:
+            if driver.current_url in ("about:blank", "data:,"):
+                conn_error = detect_connection_error(driver)
+                if conn_error:
+                    return False, f"导航失败: {conn_error}"
+                return False, f"导航失败: Chrome 异常（{str(e)[:80]}）"
+        except:
+            pass
         conn_error = detect_connection_error(driver)
         if conn_error:
             return False, f"导航失败: {conn_error}"
@@ -221,6 +237,7 @@ def navigate_and_wait(driver, url, timeout=30):
     if loaded:
         return True, None
 
+    # 刷新重试
     print(f"[WARN] 页面加载失败 ({error})，刷新重试...")
     try:
         driver.refresh()
@@ -237,15 +254,8 @@ def navigate_and_wait(driver, url, timeout=30):
         return True, None
     return False, f"页面加载失败: {error2}"
 
-# ====================== 主逻辑 ======================
-def main():
-    print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase)")
-    print("[INFO] " + "=" * 50)
-    print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
-    print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
-
-    # ---------- 浏览器驱动配置 ----------
+def create_driver():
+    """创建并返回浏览器驱动"""
     driver_kwargs = {
         "headless": True,
         "headless2": True,
@@ -257,7 +267,6 @@ def main():
     }
     if PROXY_SERVER:
         driver_kwargs["proxy"] = PROXY_SERVER
-        print(f"[INFO] 🌐 使用代理: {PROXY_SERVER}")
 
     driver = Driver(**driver_kwargs)
     driver.set_page_load_timeout(60)
@@ -265,10 +274,27 @@ def main():
 
     try:
         driver.get("about:blank")
-    except Exception as e:
-        print(f"[WARN] 访问 about:blank 失败（可忽略）: {e}")
+    except Exception:
+        pass
 
     time.sleep(2)
+    return driver
+
+# ====================== 主逻辑 ======================
+def main():
+    print("[INFO] " + "=" * 50)
+    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase)")
+    print("[INFO] " + "=" * 50)
+    print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
+    print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
+    if PROXY_SERVER:
+        print("[INFO] 🌐 使用代理: 已配置")
+
+    MAX_NAV_RETRIES = 3
+
+    # ---------- 启动浏览器 ----------
+    print("[INFO] 🚀 启动浏览器...")
+    driver = create_driver()
 
     final_screenshot = None
     result_status = "❌ 续订失败"
@@ -279,21 +305,43 @@ def main():
     sid = None
 
     try:
-        # ---------- 1. 访问主页 ----------
-        print(f"[INFO] 🌐 访问主页: {BASE_URL}/dashboard")
-        nav_ok, nav_error = navigate_and_wait(driver, f"{BASE_URL}/dashboard", timeout=20)
-        take_screenshot(driver, "01-initial")
+        # ---------- 1. 访问主页（带重试） ----------
+        nav_ok = False
+        nav_error = None
+        for attempt in range(1, MAX_NAV_RETRIES + 1):
+            print(f"[INFO] 🌐 访问主页 (第{attempt}/{MAX_NAV_RETRIES}次): {BASE_URL}/dashboard")
+            nav_ok, nav_error = navigate_and_wait(driver, f"{BASE_URL}/dashboard", timeout=20)
+            take_screenshot(driver, f"01-initial-attempt{attempt}")
+
+            if nav_ok:
+                break
+
+            print(f"[WARN] 第{attempt}次访问失败: {nav_error}")
+
+            if attempt < MAX_NAV_RETRIES:
+                print(f"[INFO] 🔄 重启浏览器后重试...")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(3)
+                driver = create_driver()
 
         if not nav_ok:
-            print(f"[ERROR] ❌ 无法访问 HidenCloud: {nav_error}")
+            print(f"[ERROR] ❌ 无法访问 HidenCloud（已重试{MAX_NAV_RETRIES}次）: {nav_error}")
             take_screenshot(driver, "ERROR-connection-failed")
             try:
                 print(f"[DEBUG] 当前URL: {driver.current_url}")
                 body_text = driver.execute_script("return document.body?.innerText || ''")
-                print(f"[DEBUG] 页面内容前500字:\n{body_text[:500]}")
+                if body_text.strip():
+                    print(f"[DEBUG] 页面内容前500字:\n{body_text[:500]}")
+                else:
+                    print("[DEBUG] 页面内容为空")
             except:
                 pass
-            raise Exception(f"无法访问 HidenCloud（{nav_error}），请检查代理配置或网络连接")
+            raise Exception(f"无法访问 HidenCloud（{nav_error}），已重试{MAX_NAV_RETRIES}次")
+
+        print("[INFO] ✅ 主页加载成功")
 
         # ---------- 2. 登录判断 ----------
         if "/auth/login" in driver.current_url or driver.is_element_visible("input#username"):
@@ -671,7 +719,10 @@ def main():
         send_tg_notification(f"❌ HidenCloud 续期失败\n错误: {str(e)[:100]}")
         raise
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
