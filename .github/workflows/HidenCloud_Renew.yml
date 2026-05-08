@@ -3,7 +3,7 @@ name: HidenCloud 续期
 on:
   workflow_dispatch:
   schedule:
-    - cron: '13 3 4 5 *' # 自动更新下次运行时间
+    - cron: '12 3 4 5 *' # 自动更新下次运行时间
 
 permissions:
   contents: write
@@ -27,11 +27,13 @@ jobs:
           pip install --quiet seleniumbase requests beautifulsoup4
 
       - name: 安装并启动代理
+        id: proxy_setup
         env:
           PROXY_NODE: ${{ secrets.PROXY_NODE }}
         run: |
           if [ -z "$PROXY_NODE" ]; then
             echo "[INFO] 未配置代理，直连模式"
+            echo "PROXY_SERVER=" >> $GITHUB_ENV
             exit 0
           fi
 
@@ -303,6 +305,43 @@ jobs:
 
           if [ -f "use_external_socks.txt" ]; then
             EXTERNAL_SOCKS=$(cat use_external_socks.txt)
+            echo "[INFO] 测试外部 SOCKS5 代理连接..."
+
+            # 测试1：代理本身是否通
+            PROXY_ALIVE=false
+            for i in 1 2 3 4 5; do
+              if curl -x "$EXTERNAL_SOCKS" -s --max-time 15 https://api.ipify.org > /dev/null 2>&1; then
+                PROXY_ALIVE=true
+                echo "[INFO] ✅ SOCKS5 代理连接成功 (尝试 $i/5)"
+                break
+              fi
+              echo "[WARN] SOCKS5 尝试 $i/5 失败..."
+              sleep 3
+            done
+
+            if [ "$PROXY_ALIVE" != "true" ]; then
+              echo "[ERROR] ❌ SOCKS5 代理连接失败，无法通过代理访问互联网"
+              exit 1
+            fi
+
+            # 测试2：代理能否访问 HidenCloud
+            HIDEN_OK=false
+            for i in 1 2 3; do
+              HTTP_CODE=$(curl -x "$EXTERNAL_SOCKS" -s --max-time 20 -o /dev/null -w "%{http_code}" https://dash.hidencloud.com)
+              echo "[INFO] HidenCloud HTTP 状态码: $HTTP_CODE (尝试 $i/3)"
+              if echo "$HTTP_CODE" | grep -qE "^(200|301|302|403)$"; then
+                HIDEN_OK=true
+                echo "[INFO] ✅ 通过 SOCKS5 可访问 HidenCloud"
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$HIDEN_OK" != "true" ]; then
+              echo "[ERROR] ❌ SOCKS5 代理无法访问 dash.hidencloud.com (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+
             echo "PROXY_SERVER=$EXTERNAL_SOCKS" >> $GITHUB_ENV
             echo "[INFO] ✅ 使用外部 SOCKS5 代理"
             exit 0
@@ -359,16 +398,16 @@ jobs:
           set -o pipefail
           python3 main.py 2>&1 | tee renew.log
 
-      # 如需上传日志截图，可取消注释以下步骤
-      # - name: 上传日志和截图
-      #   if: always()
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: hidencloud-logs
-      #     path: |
-      #       screenshots/*.png
-      #       renew.log
-      #     retention-days: 3
+      - name: 上传日志和截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidencloud-logs-${{ github.run_id }}
+          path: |
+            ${{ github.workspace }}/screenshots/*.png
+            ${{ github.workspace }}/renew.log
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: 删除旧浏览器状态缓存
         if: always()
