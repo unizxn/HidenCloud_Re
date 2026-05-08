@@ -3,7 +3,7 @@ name: HidenCloud 续期
 on:
   workflow_dispatch:
   schedule:
-    - cron: '14 3 11 5 *' # 自动更新下次运行时间
+    - cron: '12 3 4 5 *' # 自动更新下次运行时间
 
 permissions:
   contents: write
@@ -45,7 +45,12 @@ jobs:
           from urllib.parse import parse_qs, unquote, urlparse
 
           def mask(s):
-              return f"{s[:2]}***{s[-2:]}" if len(s) > 4 else "****"
+              if len(s) > 4:
+                  return f"*{s[1]}***{s[-2]}*"
+              return "****"
+
+          def mask_port(p):
+              return "****"
 
           url = os.environ.get("PROXY_NODE", "").strip()
           if not url:
@@ -99,7 +104,7 @@ jobs:
               else:
                   address, port = server_part, "1080"
 
-              print(f"[INFO] SOCKS5 -> {mask(address)}:{port}")
+              print(f"[INFO] SOCKS5 -> {mask(address)}:{mask_port(port)}")
 
               outbound = {
                   "protocol": "socks",
@@ -136,7 +141,7 @@ jobs:
               host = params.get("host", [sni])[0]
               path = unquote(params.get("path", ["/"])[0])
 
-              print(f"[INFO] VLESS -> {mask(address)}:{port} (security: {security}, network: {network})")
+              print(f"[INFO] VLESS -> {mask(address)}:{mask_port(port)} (security: {security}, network: {network})")
 
               outbound = {
                   "protocol": "vless",
@@ -204,7 +209,7 @@ jobs:
               path = vm.get("path", "/")
               fp = vm.get("fp", "chrome")
 
-              print(f"[INFO] VMess -> {mask(address)}:{port} (network: {network}, tls: {tls})")
+              print(f"[INFO] VMess -> {mask(address)}:{mask_port(port)} (network: {network}, tls: {tls})")
 
               outbound = {
                   "protocol": "vmess",
@@ -255,7 +260,7 @@ jobs:
               path = unquote(params.get("path", ["/"])[0])
               fp = params.get("fp", ["chrome"])[0]
 
-              print(f"[INFO] Trojan -> {mask(address)}:{port} (network: {network})")
+              print(f"[INFO] Trojan -> {mask(address)}:{mask_port(port)} (network: {network})")
 
               outbound = {
                   "protocol": "trojan",
@@ -304,7 +309,7 @@ jobs:
                   print(f"[ERROR] Shadowsocks 解析失败: {e}")
                   sys.exit(1)
 
-              print(f"[INFO] Shadowsocks -> {mask(address)}:{port}")
+              print(f"[INFO] Shadowsocks -> {mask(address)}:{mask_port(port)}")
 
               outbound = {
                   "protocol": "shadowsocks",
@@ -342,7 +347,7 @@ jobs:
           done
 
           echo "[ERROR] ❌ 代理连接失败"
-          cat xray.log
+          echo "[ERROR] 代理日志已保存为 artifact，请下载查看"
           exit 1
 
       - name: 恢复浏览器状态缓存
@@ -386,8 +391,14 @@ jobs:
           path: |
             ${{ github.workspace }}/screenshots/*.png
             ${{ github.workspace }}/renew.log
+            ${{ github.workspace }}/xray.log
           retention-days: 3
           if-no-files-found: warn
+
+      - name: 清理敏感文件
+        if: always()
+        run: |
+          rm -f xray_config.json xray.log 2>/dev/null || true
 
       - name: 删除旧浏览器状态缓存
         if: always()
