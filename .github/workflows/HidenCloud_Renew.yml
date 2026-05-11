@@ -12,15 +12,13 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: 拉取仓库代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 设置 Python 环境
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -438,7 +436,11 @@ jobs:
         id: extract_due
         if: success()
         run: |
-          DUE_DATE=$(grep -oP '到期时间\(标准\): \K\d{4}-\d{2}-\d{2}' renew.log | tail -1 || echo "")
+          DUE_DATE=$(grep -oP '\[CRON_DUE\] \K\d{4}-\d{2}-\d{2}' renew.log | tail -1 || echo "")
+          if [ -z "$DUE_DATE" ]; then
+            # 兜底：尝试从旧格式中提取
+            DUE_DATE=$(grep -oP '到期时间\(标准\): \K\d{4}-\d{2}-\d{2}' renew.log | tail -1 || echo "")
+          fi
           if [ -z "$DUE_DATE" ]; then
             echo "skip_update=true" >> $GITHUB_OUTPUT
             echo "::warning::未能提取到期时间，跳过 Cron 更新"
@@ -517,10 +519,13 @@ jobs:
 
       - name: 清理运行记录
         if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 0
-          keep_minimum_runs: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "🗑️ 清理旧运行记录..."
+          gh run list --workflow="${{ github.workflow }}" --limit 100 --json databaseId \
+            --repo ${{ github.repository }} | jq -r '.[2:] | .[].databaseId' \
+            | while read -r RUN_ID; do
+              gh api -X DELETE "/repos/${{ github.repository }}/actions/runs/${RUN_ID}" 2>/dev/null || true
+            done
+          echo "✅ 旧运行记录已清理"
