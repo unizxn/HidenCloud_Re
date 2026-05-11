@@ -731,6 +731,9 @@ def main():
                 change_info = due_date_after_raw
             else:
                 change_info = f"{due_date_before_raw} → {due_date_after_raw}"
+        elif due_date_before_raw != "N/A":
+            # 续期被限制时，续订后拿不到到期时间，用续订前的值兜底
+            change_info = due_date_before_raw
         else:
             change_info = due_date_after_raw
 
