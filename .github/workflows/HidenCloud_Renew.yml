@@ -3,7 +3,7 @@ name: HidenCloud 续期
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7 3 18 5 *' # 自动更新下次运行时间
+    - cron: '13 3 4 5 *' # 自动更新下次运行时间
 
 permissions:
   contents: write
@@ -352,21 +352,36 @@ jobs:
 
       - name: 恢复浏览器状态缓存
         id: cache-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: browser_state
           key: hidencloud-state-${{ github.run_id }}
           restore-keys: |
             hidencloud-state-
 
-      - name: 清理 Chrome 锁文件
+      - name: 清理 Chrome 残留状态
         run: |
           PROFILE_DIR="browser_state/selenium_profile"
           if [ -d "$PROFILE_DIR" ]; then
-            echo "🧹 清理浏览器锁文件..."
+            echo "🧹 清理 Chrome 残留状态..."
+            # 锁文件（防止 Chrome 认为已有实例运行）
             find "$PROFILE_DIR" -name "SingletonLock" -delete 2>/dev/null || true
             find "$PROFILE_DIR" -name "SingletonSocket" -delete 2>/dev/null || true
             find "$PROFILE_DIR" -name "SingletonCookie" -delete 2>/dev/null || true
+            # 崩溃恢复标记（防止弹出"上次未正常关闭"并尝试恢复旧标签页）
+            rm -f "$PROFILE_DIR/Preferences.bak" 2>/dev/null || true
+            find "$PROFILE_DIR" -name "Session Storage" -type d -exec rm -rf {} + 2>/dev/null || true
+            find "$PROFILE_DIR" -name "sessionstore.js" -delete 2>/dev/null || true
+            find "$PROFILE_DIR" -name "Tabs" -delete 2>/dev/null || true
+            find "$PROFILE_DIR" -name "Current*" -path "*/Session*" -delete 2>/dev/null || true
+            # Web Data 锁
+            find "$PROFILE_DIR" -name "Web Data-journal" -delete 2>/dev/null || true
+            find "$PROFILE_DIR" -name "History-journal" -delete 2>/dev/null || true
+            find "$PROFILE_DIR" -name "Cookies-journal" -delete 2>/dev/null || true
+            find "$PROFILE_DIR" -name "Login Data-journal" -delete 2>/dev/null || true
+            # GPU/Shader 缓存（headless 不需要，且可能损坏）
+            find "$PROFILE_DIR" -name "GPUCache" -type d -exec rm -rf {} + 2>/dev/null || true
+            find "$PROFILE_DIR" -name "ShaderCache" -type d -exec rm -rf {} + 2>/dev/null || true
             echo "✅ 清理完成"
           else
             echo "📂 用户数据目录不存在，无需清理"
@@ -385,7 +400,7 @@ jobs:
 
       - name: 上传日志和截图
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: hidencloud-logs-${{ github.run_id }}
           path: |
@@ -427,7 +442,7 @@ jobs:
 
       - name: 保存浏览器状态缓存
         if: success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: browser_state
           key: hidencloud-state-${{ github.run_id }}
