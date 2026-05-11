@@ -691,7 +691,22 @@ def main():
         if due_date_after_std:
             print(f"到期时间(标准): {due_date_after_std}")
         else:
-            print(f"到期时间(标准): {due_date_after_raw}")
+            # raw 可能是 "28 Apr 2026" 等格式，尝试再解析一次
+            fallback = parse_due_date(due_date_after_raw)
+            if fallback:
+                due_date_after_std = fallback
+                print(f"到期时间(标准): {fallback}")
+            else:
+                # 续期被限制时，关弹窗后可能拿不到到期时间，用续订前的值兜底
+                if due_date_before_std:
+                    due_date_after_std = due_date_before_std
+                    print(f"到期时间(标准): {due_date_before_std} (使用续订前值)")
+                else:
+                    print(f"[WARN] 到期时间解析失败，原始值: {due_date_after_raw}")
+
+        # 专用行供 YAML grep 提取
+        if due_date_after_std:
+            print(f"[CRON_DUE] {due_date_after_std}")
 
         # ---------- 7. 判断结果状态 ----------
         if restricted and not renew_executed:
