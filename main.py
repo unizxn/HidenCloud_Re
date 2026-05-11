@@ -4,6 +4,7 @@
 import os
 import re
 import time
+import subprocess
 import requests
 from datetime import datetime, timezone, timedelta
 from seleniumbase import Driver
@@ -254,6 +255,26 @@ def navigate_and_wait(driver, url, timeout=30):
         return True, None
     return False, f"页面加载失败: {error2}"
 
+def kill_chrome_processes():
+    """杀掉所有 Chrome/ChromeDriver 残留进程"""
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'Xvfb'], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    time.sleep(2)
+
 def create_driver():
     """创建并返回浏览器驱动"""
     driver_kwargs = {
@@ -290,7 +311,7 @@ def main():
     if PROXY_SERVER:
         print("[INFO] 🌐 使用代理: 已配置")
 
-    MAX_NAV_RETRIES = 3
+    MAX_NAV_RETRIES = 5
 
     # ---------- 启动浏览器 ----------
     print("[INFO] 🚀 启动浏览器...")
@@ -319,11 +340,12 @@ def main():
             print(f"[WARN] 第{attempt}次访问失败: {nav_error}")
 
             if attempt < MAX_NAV_RETRIES:
-                print(f"[INFO] 🔄 重启浏览器后重试...")
+                print(f"[INFO] 🔄 杀掉残留进程后重启浏览器...")
                 try:
                     driver.quit()
                 except Exception:
                     pass
+                kill_chrome_processes()
                 time.sleep(3)
                 driver = create_driver()
 
