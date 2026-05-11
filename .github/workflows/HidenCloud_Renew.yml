@@ -3,7 +3,7 @@ name: HidenCloud 续期
 on:
   workflow_dispatch:
   schedule:
-    - cron: '38 3 18 5 *' # 自动更新下次运行时间
+    - cron: '13 3 4 5 *' # 自动更新下次运行时间
 
 permissions:
   contents: write
@@ -12,6 +12,8 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: 拉取仓库代码
