@@ -276,6 +276,22 @@ def kill_chrome_processes():
 
 def create_driver():
     """创建并返回浏览器驱动"""
+    chromium_args = (
+        "--no-first-run,"
+        "--no-default-browser-check,"
+        "--disable-session-crashed-bubble,"
+        "--disable-infobars,"
+        "--disable-background-networking,"
+        "--disable-client-side-phishing-detection,"
+        "--disable-default-apps,"
+        "--disable-hang-monitor,"
+        "--disable-popup-blocking,"
+        "--disable-prompt-on-repost,"
+        "--disable-sync,"
+        "--metrics-recording-only,"
+        "--safebrowsing-disable-auto-update,"
+        "--password-store=basic"
+    )
     driver_kwargs = {
         "headless": True,
         "headless2": True,
@@ -284,22 +300,7 @@ def create_driver():
         "window_size": "1280,753",
         "disable_csp": True,
         "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        "chrome_args": [
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-session-crashed-bubble",
-            "--disable-infobars",
-            "--disable-background-networking",
-            "--disable-client-side-phishing-detection",
-            "--disable-default-apps",
-            "--disable-hang-monitor",
-            "--disable-popup-blocking",
-            "--disable-prompt-on-repost",
-            "--disable-sync",
-            "--metrics-recording-only",
-            "--safebrowsing-disable-auto-update",
-            "--password-store=basic",
-        ],
+        "chromium_arg": chromium_args,
     }
     if PROXY_SERVER:
         driver_kwargs["proxy"] = PROXY_SERVER
