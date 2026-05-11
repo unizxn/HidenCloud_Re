@@ -168,17 +168,28 @@ def detect_connection_error(driver):
     except:
         return None
 
-def wait_for_page_loaded(driver, timeout=30):
+def wait_for_page_loaded(driver, timeout=30, target_domain="hidencloud"):
     """等待页面真正加载完成（非 Chrome 错误页）"""
     start = time.time()
     check_count = 0
     while time.time() - start < timeout:
         check_count += 1
         try:
+            current_url = driver.current_url
+
             # 如果 URL 还是 about:blank，导航根本没发生
-            if driver.current_url in ("about:blank", "data:,"):
+            if current_url in ("about:blank", "data:,"):
                 if check_count > 5:
                     return False, "页面未加载（URL 仍为 about:blank）"
+                time.sleep(1)
+                continue
+
+            # 快速失败：如果导航到了非目标域名，说明被重定向或导航失败
+            if target_domain and target_domain not in current_url:
+                # 给 Cloudflare redirect 一点时间（可能在跳转中间态）
+                if check_count > 3:
+                    print(f"[DEBUG] 当前URL: {current_url}，不在目标域名 {target_domain}")
+                    return False, f"导航到了非目标页面: {current_url}"
                 time.sleep(1)
                 continue
 
@@ -191,19 +202,24 @@ def wait_for_page_loaded(driver, timeout=30):
                     return False, conn_error
 
             body_text = driver.execute_script("return document.body?.innerText || ''")
+
+            # 快速失败：页面内容为空或极短（空白页）
+            if len(body_text.strip()) < 10 and check_count > 5:
+                return False, "页面内容为空"
+
             source = driver.page_source
 
             if any(kw in body_text for kw in ["Free Server", "Your Services", "Dashboard"]):
                 return True, None
             if "table-column-body-" in source:
                 return True, None
-            if driver.is_element_visible("input#username") or "/auth/login" in driver.current_url:
+            if driver.is_element_visible("input#username") or "/auth/login" in current_url:
                 return True, None
-            if any(kw in body_text for kw in ["Cloudflare", "Checking your browser", "Just a moment"]):
+            if any(kw in body_text for kw in ["Cloudflare", "Checking your browser", "Just a moment", "cf-browser-verification"]):
                 if check_count % 3 == 0:
                     print(f"[DEBUG] 第{check_count}次检查 - Cloudflare 验证页，继续等待...")
             elif check_count % 3 == 0:
-                print(f"[DEBUG] 第{check_count}次检查 - 等待中...")
+                print(f"[DEBUG] 第{check_count}次检查 - 等待中... (body_len={len(body_text)})")
         except Exception as e:
             print(f"[WARN] 第{check_count}次检查异常: {e}")
         time.sleep(1)
@@ -213,15 +229,14 @@ def wait_for_page_loaded(driver, timeout=30):
         return False, conn_error
     return False, "页面加载超时"
 
-def navigate_and_wait(driver, url, timeout=30):
-    """导航到指定 URL 并等待页面加载完成"""
+def navigate_and_wait(driver, url, timeout=15):
+    """导航到指定 URL 并等待页面加载完成（不刷新重试，让外层重试循环处理）"""
     print(f"[INFO] 🌐 导航到: {url}")
     try:
         driver.get(url)
     except Exception as e:
         print(f"[WARN] 导航异常: {e}")
         time.sleep(2)
-        # 检查是否导航到了任何页面
         try:
             if driver.current_url in ("about:blank", "data:,"):
                 conn_error = detect_connection_error(driver)
@@ -237,23 +252,7 @@ def navigate_and_wait(driver, url, timeout=30):
     loaded, error = wait_for_page_loaded(driver, timeout=timeout)
     if loaded:
         return True, None
-
-    # 刷新重试
-    print(f"[WARN] 页面加载失败 ({error})，刷新重试...")
-    try:
-        driver.refresh()
-    except:
-        try:
-            driver.get(url)
-        except Exception as e:
-            return False, f"刷新也失败: {e}"
-
-    time.sleep(3)
-    loaded2, error2 = wait_for_page_loaded(driver, timeout=timeout)
-    if loaded2:
-        print("[INFO] ✅ 刷新后页面加载成功")
-        return True, None
-    return False, f"页面加载失败: {error2}"
+    return False, f"页面加载失败: {error}"
 
 def kill_chrome_processes():
     """杀掉所有 Chrome/ChromeDriver 残留进程"""
@@ -285,6 +284,22 @@ def create_driver():
         "window_size": "1280,753",
         "disable_csp": True,
         "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "chrome_args": [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-session-crashed-bubble",
+            "--disable-infobars",
+            "--disable-background-networking",
+            "--disable-client-side-phishing-detection",
+            "--disable-default-apps",
+            "--disable-hang-monitor",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--safebrowsing-disable-auto-update",
+            "--password-store=basic",
+        ],
     }
     if PROXY_SERVER:
         driver_kwargs["proxy"] = PROXY_SERVER
@@ -331,7 +346,7 @@ def main():
         nav_error = None
         for attempt in range(1, MAX_NAV_RETRIES + 1):
             print(f"[INFO] 🌐 访问主页 (第{attempt}/{MAX_NAV_RETRIES}次): {BASE_URL}/dashboard")
-            nav_ok, nav_error = navigate_and_wait(driver, f"{BASE_URL}/dashboard", timeout=20)
+            nav_ok, nav_error = navigate_and_wait(driver, f"{BASE_URL}/dashboard", timeout=12)
             take_screenshot(driver, f"01-initial-attempt{attempt}")
 
             if nav_ok:
